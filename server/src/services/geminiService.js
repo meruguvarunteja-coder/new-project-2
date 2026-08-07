@@ -14,7 +14,7 @@ export async function parseScenarioWithGemini(userPrompt) {
   }
 
   try {
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
     const prompt = `
 You are an expert Decision Intelligence AI. Analyze the following decision scenario text and parse it into a structured JSON object.
 
@@ -74,7 +74,7 @@ export async function generateExecutiveAnalysisWithGemini(decision, mcdaResults,
   }
 
   try {
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
     const prompt = `
 You are OmniDecision AI, an executive decision intelligence advisor. Evaluate this MCDA matrix and Monte Carlo simulation output:
 
