@@ -1,5 +1,12 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import api from '../services/api';
+import {
+  calculateMCDAScores,
+  runMonteCarloSimulation,
+  calculateSensitivityAnalysis,
+  generateFallbackScenarioParse,
+  generateFallbackExecutiveAnalysis
+} from '../utils/mcdaEngine';
 
 const DecisionContext = createContext();
 
@@ -46,6 +53,16 @@ export const DecisionProvider = ({ children }) => {
     setDecisions(loadFromStorage());
   }, []);
 
+  const runLocalCompute = (decision) => {
+    const mcda = calculateMCDAScores(decision);
+    const monteCarlo = runMonteCarloSimulation(decision, 1000);
+    const sensitivity = calculateSensitivityAnalysis(decision);
+    setMcdaResults(mcda);
+    setMonteCarloResults(monteCarlo);
+    setSensitivityResults(sensitivity);
+    return { mcda, monteCarlo, sensitivity };
+  };
+
   const fetchDecisionById = useCallback(async (id) => {
     const decision = decisions.find(d => d.id === id) || loadFromStorage().find(d => d.id === id);
     if (!decision) {
@@ -55,7 +72,6 @@ export const DecisionProvider = ({ children }) => {
 
     setActiveDecision(decision);
 
-    // Run computation against backend if available
     try {
       setLoading(true);
       const res = await api.post('/decisions/compute', decision);
@@ -63,11 +79,12 @@ export const DecisionProvider = ({ children }) => {
         setMcdaResults(res.data.mcda);
         setMonteCarloResults(res.data.monteCarlo);
         setSensitivityResults(res.data.sensitivity);
+        return { decision, ...res.data };
       }
-      return { decision, ...res.data };
-    } catch (err) {
-      console.warn('Backend unavailable, using local compute fallback');
-      return { decision };
+    } catch {
+      // Client-side computation fallback
+      const local = runLocalCompute(decision);
+      return { decision, ...local };
     } finally {
       setLoading(false);
     }
@@ -92,14 +109,16 @@ export const DecisionProvider = ({ children }) => {
 
       setActiveDecision(newDecision);
 
-      // Compute MCDA if criteria/options are ready
       if (newDecision.criteria?.length && newDecision.options?.length) {
         try {
           const res = await api.post('/decisions/compute', newDecision);
-          if (res.data.success) setMcdaResults(res.data.mcda);
-          return { success: true, decision: newDecision, mcda: res.data.mcda };
+          if (res.data.success) {
+            setMcdaResults(res.data.mcda);
+            return { success: true, decision: newDecision, mcda: res.data.mcda };
+          }
         } catch {
-          return { success: true, decision: newDecision };
+          const local = runLocalCompute(newDecision);
+          return { success: true, decision: newDecision, mcda: local.mcda };
         }
       }
 
@@ -128,7 +147,6 @@ export const DecisionProvider = ({ children }) => {
 
       setActiveDecision(prev => prev?.id === id ? { ...prev, ...updated } : prev);
 
-      // Recompute analysis
       if (updated.criteria?.length && updated.options?.length) {
         try {
           const res = await api.post('/decisions/compute', updated);
@@ -136,10 +154,11 @@ export const DecisionProvider = ({ children }) => {
             setMcdaResults(res.data.mcda);
             setMonteCarloResults(res.data.monteCarlo);
             setSensitivityResults(res.data.sensitivity);
+            return { success: true, decision: updated, mcda: res.data.mcda };
           }
-          return { success: true, decision: updated, mcda: res.data.mcda };
         } catch {
-          return { success: true, decision: updated };
+          const local = runLocalCompute(updated);
+          return { success: true, decision: updated, mcda: local.mcda };
         }
       }
 
@@ -163,10 +182,12 @@ export const DecisionProvider = ({ children }) => {
     try {
       setAiLoading(true);
       const res = await api.post('/ai/parse-scenario', { prompt });
-      return res.data;
-    } catch (err) {
-      console.error('AI parse failed:', err);
-      throw err;
+      if (res.data && res.data.success) return res.data;
+      throw new Error('API returned unsuccess');
+    } catch {
+      // Client-side fallback parsing when backend is offline/unreachable
+      const fallbackData = generateFallbackScenarioParse(prompt);
+      return { success: true, data: fallbackData };
     } finally {
       setAiLoading(false);
     }
@@ -175,17 +196,27 @@ export const DecisionProvider = ({ children }) => {
   const generateAIAnalysis = async (decisionId, decisionData = null) => {
     try {
       setAiLoading(true);
-      const decision = decisionData || decisions.find(d => d.id === decisionId);
-      const res = await api.post('/ai/analyze-decision', { decisionId, decisionData: decision });
-      if (res.data.success) {
-        setAiAnalysis(res.data.analysis);
-        if (res.data.mcda) setMcdaResults(res.data.mcda);
-        if (res.data.monteCarlo) setMonteCarloResults(res.data.monteCarlo);
+      const decision = decisionData || decisions.find(d => d.id === decisionId) || activeDecision;
+      try {
+        const res = await api.post('/ai/analyze-decision', { decisionId, decisionData: decision });
+        if (res.data && res.data.success) {
+          setAiAnalysis(res.data.analysis);
+          if (res.data.mcda) setMcdaResults(res.data.mcda);
+          if (res.data.monteCarlo) setMonteCarloResults(res.data.monteCarlo);
+          return res.data;
+        }
+      } catch {
+        // Fallback execution
       }
-      return res.data;
-    } catch (err) {
-      console.error('AI analysis failed:', err);
-      throw err;
+
+      const mcda = mcdaResults || calculateMCDAScores(decision);
+      const monteCarlo = monteCarloResults || runMonteCarloSimulation(decision, 1000);
+      const analysis = generateFallbackExecutiveAnalysis(decision, mcda, monteCarlo);
+
+      setAiAnalysis(analysis);
+      setMcdaResults(mcda);
+      setMonteCarloResults(monteCarlo);
+      return { success: true, analysis, mcda, monteCarlo };
     } finally {
       setAiLoading(false);
     }
@@ -193,14 +224,26 @@ export const DecisionProvider = ({ children }) => {
 
   const runSimulations = async (id, iterations = 1000, volatility = 0.15) => {
     try {
-      const decision = decisions.find(d => d.id === id);
-      const res = await api.post('/decisions/simulate', { decision, iterations, volatility });
-      if (res.data.success) {
-        setMcdaResults(res.data.mcda);
-        setMonteCarloResults(res.data.monteCarlo);
-        setSensitivityResults(res.data.sensitivity);
+      const decision = decisions.find(d => d.id === id) || activeDecision;
+      try {
+        const res = await api.post('/decisions/simulate', { decision, iterations, volatility });
+        if (res.data && res.data.success) {
+          setMcdaResults(res.data.mcda);
+          setMonteCarloResults(res.data.monteCarlo);
+          setSensitivityResults(res.data.sensitivity);
+          return res.data;
+        }
+      } catch {
+        // Fallback simulation run
       }
-      return res.data;
+
+      const mcda = calculateMCDAScores(decision);
+      const monteCarlo = runMonteCarloSimulation(decision, iterations, volatility);
+      const sensitivity = calculateSensitivityAnalysis(decision);
+      setMcdaResults(mcda);
+      setMonteCarloResults(monteCarlo);
+      setSensitivityResults(sensitivity);
+      return { success: true, mcda, monteCarlo, sensitivity };
     } catch (err) {
       console.error('Simulation failed:', err);
       throw err;
