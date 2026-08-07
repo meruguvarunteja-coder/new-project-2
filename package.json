@@ -1,0 +1,16 @@
+{
+  "name": "omnidecision-ai",
+  "version": "1.0.0",
+  "description": "OmniDecision AI — Decision Intelligence Platform",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently --names \"API,UI\" --prefix-colors \"cyan,magenta\" \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "cd server && node index.js",
+    "dev:client": "cd client && npm run dev",
+    "install:all": "cd server && npm install && cd ../client && npm install",
+    "build": "cd client && npm run build"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.4"
+  }
+}
