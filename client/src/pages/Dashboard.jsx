@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useDecision } from '../context/DecisionContext';
-import { useAuth } from '../context/AuthContext';
 import {
   PlusCircle,
   Brain,
@@ -19,7 +18,6 @@ import AIPromptModal from '../components/AIPromptModal';
 
 export default function Dashboard() {
   const { decisions, fetchDecisions, parseScenarioText, createDecision, loading } = useDecision();
-  const { user } = useAuth();
   const navigate = useNavigate();
 
   const [isAiModalOpen, setIsAiModalOpen] = useState(false);
@@ -48,7 +46,7 @@ export default function Dashboard() {
               <Sparkles className="w-3.5 h-3.5 text-cyan-400" /> Decision Intelligence Workspace
             </span>
             <h1 className="text-3xl font-display font-extrabold text-white tracking-tight">
-              Welcome back, <span className="text-gradient-indigo">{user?.name || 'Strategist'}</span>
+              Welcome to <span className="text-gradient-indigo">OmniDecision AI</span>
             </h1>
             <p className="text-sm text-slate-300">
               Evaluate complex multi-criteria trade-offs, run stochastic Monte Carlo simulations, and generate explainable executive recommendations powered by Google Gemini.
