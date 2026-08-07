@@ -1,10 +1,33 @@
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import api from '../services/api';
 
 const DecisionContext = createContext();
 
+const STORAGE_KEY = 'omnidecision_decisions';
+
+// ─── LocalStorage Helpers ─────────────────────────────────────────────────
+
+function loadFromStorage() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveToStorage(decisions) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(decisions));
+}
+
+function generateId() {
+  return `dec_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+// ─── Provider ─────────────────────────────────────────────────────────────
+
 export const DecisionProvider = ({ children }) => {
-  const [decisions, setDecisions] = useState([]);
+  const [decisions, setDecisions] = useState(() => loadFromStorage());
   const [activeDecision, setActiveDecision] = useState(null);
   const [mcdaResults, setMcdaResults] = useState(null);
   const [monteCarloResults, setMonteCarloResults] = useState(null);
@@ -14,52 +37,75 @@ export const DecisionProvider = ({ children }) => {
   const [aiLoading, setAiLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  const fetchDecisions = useCallback(async () => {
-    try {
-      setLoading(true);
-      const res = await api.get('/decisions');
-      if (res.data.success) {
-        setDecisions(res.data.decisions);
-      }
-    } catch (err) {
-      console.error('Fetch decisions failed:', err);
-      setError('Failed to load decision scenarios');
-    } finally {
-      setLoading(false);
-    }
+  // Persist to localStorage on every change
+  useEffect(() => {
+    saveToStorage(decisions);
+  }, [decisions]);
+
+  const fetchDecisions = useCallback(() => {
+    setDecisions(loadFromStorage());
   }, []);
 
   const fetchDecisionById = useCallback(async (id) => {
+    const decision = decisions.find(d => d.id === id) || loadFromStorage().find(d => d.id === id);
+    if (!decision) {
+      setError('Decision not found');
+      return null;
+    }
+
+    setActiveDecision(decision);
+
+    // Run computation against backend if available
     try {
       setLoading(true);
-      const res = await api.get(`/decisions/${id}`);
+      const res = await api.post('/decisions/compute', decision);
       if (res.data.success) {
-        setActiveDecision(res.data.decision);
         setMcdaResults(res.data.mcda);
         setMonteCarloResults(res.data.monteCarlo);
         setSensitivityResults(res.data.sensitivity);
       }
-      return res.data;
+      return { decision, ...res.data };
     } catch (err) {
-      console.error('Fetch decision failed:', err);
-      setError('Failed to load decision details');
+      console.warn('Backend unavailable, using local compute fallback');
+      return { decision };
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [decisions]);
 
   const createDecision = async (decisionData) => {
     try {
       setLoading(true);
-      const res = await api.post('/decisions', decisionData);
-      if (res.data.success) {
-        setDecisions(prev => [res.data.decision, ...prev]);
-        setActiveDecision(res.data.decision);
-        setMcdaResults(res.data.mcda);
+      const newDecision = {
+        ...decisionData,
+        id: generateId(),
+        status: 'draft',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      setDecisions(prev => {
+        const updated = [newDecision, ...prev];
+        saveToStorage(updated);
+        return updated;
+      });
+
+      setActiveDecision(newDecision);
+
+      // Compute MCDA if criteria/options are ready
+      if (newDecision.criteria?.length && newDecision.options?.length) {
+        try {
+          const res = await api.post('/decisions/compute', newDecision);
+          if (res.data.success) setMcdaResults(res.data.mcda);
+          return { success: true, decision: newDecision, mcda: res.data.mcda };
+        } catch {
+          return { success: true, decision: newDecision };
+        }
       }
-      return res.data;
+
+      return { success: true, decision: newDecision };
     } catch (err) {
-      console.error('Create decision failed:', err);
+      console.error('Create decision error:', err);
       throw err;
     } finally {
       setLoading(false);
@@ -68,17 +114,49 @@ export const DecisionProvider = ({ children }) => {
 
   const updateDecision = async (id, updateData) => {
     try {
-      const res = await api.put(`/decisions/${id}`, updateData);
-      if (res.data.success) {
-        setActiveDecision(res.data.decision);
-        setMcdaResults(res.data.mcda);
-        setDecisions(prev => prev.map(d => d.id === id ? { ...d, ...res.data.decision } : d));
+      const updated = {
+        ...updateData,
+        id,
+        updatedAt: new Date().toISOString()
+      };
+
+      setDecisions(prev => {
+        const next = prev.map(d => d.id === id ? { ...d, ...updated } : d);
+        saveToStorage(next);
+        return next;
+      });
+
+      setActiveDecision(prev => prev?.id === id ? { ...prev, ...updated } : prev);
+
+      // Recompute analysis
+      if (updated.criteria?.length && updated.options?.length) {
+        try {
+          const res = await api.post('/decisions/compute', updated);
+          if (res.data.success) {
+            setMcdaResults(res.data.mcda);
+            setMonteCarloResults(res.data.monteCarlo);
+            setSensitivityResults(res.data.sensitivity);
+          }
+          return { success: true, decision: updated, mcda: res.data.mcda };
+        } catch {
+          return { success: true, decision: updated };
+        }
       }
-      return res.data;
+
+      return { success: true, decision: updated };
     } catch (err) {
-      console.error('Update decision failed:', err);
+      console.error('Update decision error:', err);
       throw err;
     }
+  };
+
+  const deleteDecision = (id) => {
+    setDecisions(prev => {
+      const next = prev.filter(d => d.id !== id);
+      saveToStorage(next);
+      return next;
+    });
+    if (activeDecision?.id === id) setActiveDecision(null);
   };
 
   const parseScenarioText = async (prompt) => {
@@ -87,7 +165,7 @@ export const DecisionProvider = ({ children }) => {
       const res = await api.post('/ai/parse-scenario', { prompt });
       return res.data;
     } catch (err) {
-      console.error('AI Scenario parsing failed:', err);
+      console.error('AI parse failed:', err);
       throw err;
     } finally {
       setAiLoading(false);
@@ -97,7 +175,8 @@ export const DecisionProvider = ({ children }) => {
   const generateAIAnalysis = async (decisionId, decisionData = null) => {
     try {
       setAiLoading(true);
-      const res = await api.post('/ai/analyze-decision', { decisionId, decisionData });
+      const decision = decisionData || decisions.find(d => d.id === decisionId);
+      const res = await api.post('/ai/analyze-decision', { decisionId, decisionData: decision });
       if (res.data.success) {
         setAiAnalysis(res.data.analysis);
         if (res.data.mcda) setMcdaResults(res.data.mcda);
@@ -105,7 +184,7 @@ export const DecisionProvider = ({ children }) => {
       }
       return res.data;
     } catch (err) {
-      console.error('AI analysis generation failed:', err);
+      console.error('AI analysis failed:', err);
       throw err;
     } finally {
       setAiLoading(false);
@@ -114,7 +193,8 @@ export const DecisionProvider = ({ children }) => {
 
   const runSimulations = async (id, iterations = 1000, volatility = 0.15) => {
     try {
-      const res = await api.post(`/decisions/${id}/simulate`, { iterations, volatility });
+      const decision = decisions.find(d => d.id === id);
+      const res = await api.post('/decisions/simulate', { decision, iterations, volatility });
       if (res.data.success) {
         setMcdaResults(res.data.mcda);
         setMonteCarloResults(res.data.monteCarlo);
@@ -122,7 +202,7 @@ export const DecisionProvider = ({ children }) => {
       }
       return res.data;
     } catch (err) {
-      console.error('Simulation run failed:', err);
+      console.error('Simulation failed:', err);
       throw err;
     }
   };
@@ -142,6 +222,7 @@ export const DecisionProvider = ({ children }) => {
       fetchDecisionById,
       createDecision,
       updateDecision,
+      deleteDecision,
       parseScenarioText,
       generateAIAnalysis,
       runSimulations,

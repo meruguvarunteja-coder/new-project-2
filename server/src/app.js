@@ -1,25 +1,24 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import authRoutes from './routes/authRoutes.js';
 import decisionRoutes from './routes/decisionRoutes.js';
 import aiRoutes from './routes/aiRoutes.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
 const app = express();
 
-// Security and CORS middleware
-app.use(helmet());
+// Security & CORS
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({
-  origin: '*', // Allow all origins for dev/testing ease
+  origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Health check endpoint
+// Health check
 app.get('/api/health', (req, res) => {
   res.status(200).json({
     status: 'online',
@@ -29,8 +28,7 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// API Routes
-app.use('/api/auth', authRoutes);
+// Routes — no auth required
 app.use('/api/decisions', decisionRoutes);
 app.use('/api/ai', aiRoutes);
 
